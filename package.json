@@ -1,6 +1,6 @@
 {
   "name": "@photostructure/sqlite-seeded-random",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Deterministic seeded hash function for SQLite ORDER BY randomization",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
