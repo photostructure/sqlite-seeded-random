@@ -1,0 +1,83 @@
+{
+  "name": "@photostructure/sqlite-seeded-random",
+  "version": "0.1.0",
+  "description": "Deterministic seeded hash function for SQLite ORDER BY randomization",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "make loadable && tsup",
+    "build:native": "make loadable",
+    "build:js": "tsup",
+    "fmt": "run-p fmt:*",
+    "fmt:c": "clang-format --style=LLVM -i seeded_random.c || echo 'clang-format not available'",
+    "fmt:ts": "prettier --cache --write \"**/*.{*ts,*js}\"",
+    "fmt:json": "prettier --cache --write \"**/*.json\"",
+    "fmt:yml": "prettier --cache --write \"**/*.{yaml,yml}\"",
+    "fmt:md": "prettier --cache --write \"**/*.md\"",
+    "lint": "run-s lint:*",
+    "lint:tsc": "tsc --noEmit",
+    "lint:eslint": "eslint",
+    "update": "npx -y npm-check-updates -u && npm install",
+    "update:actions": "pinact run -u",
+    "test": "jest",
+    "precommit": "run-s clean update fmt lint build test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/photostructure/sqlite-seeded-random.git"
+  },
+  "keywords": [
+    "sqlite",
+    "random",
+    "seeded",
+    "deterministic",
+    "hash",
+    "splitmix64"
+  ],
+  "author": "Matthew McEachen",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/photostructure/sqlite-seeded-random/issues"
+  },
+  "homepage": "https://github.com/photostructure/sqlite-seeded-random#readme",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "files": [
+    "dist/"
+  ],
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@photostructure/sqlite": "^0.5.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.2.1",
+    "eslint": "^9.39.2",
+    "globals": "^17.3.0",
+    "jest": "^30.2.0",
+    "npm-check-updates": "^19.3.2",
+    "npm-run-all2": "^8.0.4",
+    "prettier": "^3.8.1",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "ts-jest": "^29.4.6",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.54.0"
+  }
+}

@@ -1,0 +1,281 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version bump type"
+        required: false
+        type: choice
+        default: "patch"
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Test (runs on every push/PR) ──────────────────────────────────────
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        node-version: [20, 22, 24, 25]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+  # ── Build native extensions (runs on every push/PR) ───────────────────
+  build-linux-x64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: make loadable
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: linux-x64
+          path: dist/seeded_random.so
+
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: make loadable
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: linux-arm64
+          path: dist/seeded_random.so
+
+  build-linux-x64-musl:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: |
+          docker run --rm -v $(pwd):/tmp/project --entrypoint /bin/sh --platform linux/amd64 node:20-alpine -c "\
+          apk add build-base --update-cache && \
+          cd /tmp/project && \
+          make loadable"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: linux-x64-musl
+          path: dist/seeded_random.so
+
+  build-linux-arm64-musl:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: |
+          docker run --rm -v $(pwd):/tmp/project --entrypoint /bin/sh --platform linux/arm64 node:20-alpine -c "\
+          apk add build-base --update-cache && \
+          cd /tmp/project && \
+          make loadable"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: linux-arm64-musl
+          path: dist/seeded_random.so
+
+  build-darwin-x64:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: make loadable
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: darwin-x64
+          path: dist/seeded_random.dylib
+
+  build-darwin-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: make loadable
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: darwin-arm64
+          path: dist/seeded_random.dylib
+
+  build-win32-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - run: mkdir dist
+      - run: cl.exe /W4 /Ivendor/ /O2 /LD seeded_random.c /Fedist/seeded_random.dll
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: win32-x64
+          path: dist/seeded_random.dll
+
+  build-win32-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: arm64
+      - run: mkdir dist
+      - run: cl.exe /W4 /Ivendor/ /O2 /LD seeded_random.c /Fedist/seeded_random.dll
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: win32-arm64
+          path: dist/seeded_random.dll
+
+  # ── Release (manual only, requires all builds + tests to pass) ────────
+  prepare-release:
+    if: github.event_name == 'workflow_dispatch'
+    needs:
+      [
+        test,
+        build-linux-x64,
+        build-linux-arm64,
+        build-linux-x64-musl,
+        build-linux-arm64-musl,
+        build-darwin-x64,
+        build-darwin-arm64,
+        build-win32-x64,
+        build-win32-arm64,
+      ]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      release_branch: ${{ steps.prepare.outputs.branch }}
+      new_version: ${{ steps.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: "20"
+
+      - uses: photostructure/git-ssh-signing-action@fdd4b062a9ba41473f013258cc9c7eea1640f826 # v1.2.0
+        with:
+          ssh-signing-key: ${{ secrets.SSH_SIGNING_KEY }}
+          git-user-name: ${{ secrets.GIT_USER_NAME }}
+          git-user-email: ${{ secrets.GIT_USER_EMAIL }}
+
+      - name: Bump version and create release branch
+        id: prepare
+        run: |
+          CURRENT=$(cat VERSION | tr -d '[:space:]')
+          BASE_VERSION=$(echo "$CURRENT" | sed 's/-.*//')
+          NEW_VERSION=$(npx -y semver -i "${{ github.event.inputs.version }}" "$BASE_VERSION")
+          BRANCH="release/v${NEW_VERSION}"
+
+          git checkout -b "$BRANCH"
+          echo "$NEW_VERSION" > VERSION
+          npm version "$NEW_VERSION" --no-git-tag-version
+
+          git add VERSION package.json package-lock.json
+          git commit -S -m "release: v${NEW_VERSION}"
+          git push origin "$BRANCH"
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+  publish-npm:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    needs: [prepare-release]
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
+      RELEASE_BRANCH: ${{ needs.prepare-release.outputs.release_branch }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_branch }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: linux-x64
+          path: dist/linux-x64
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: linux-arm64
+          path: dist/linux-arm64
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: linux-x64-musl
+          path: dist/linux-x64-musl
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: linux-arm64-musl
+          path: dist/linux-arm64-musl
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: darwin-x64
+          path: dist/darwin-x64
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: darwin-arm64
+          path: dist/darwin-arm64
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: win32-x64
+          path: dist/win32-x64
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: win32-arm64
+          path: dist/win32-arm64
+
+      - run: ls -laR dist/
+
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - run: npx tsup
+
+      - uses: photostructure/git-ssh-signing-action@fdd4b062a9ba41473f013258cc9c7eea1640f826 # v1.2.0
+        with:
+          ssh-signing-key: ${{ secrets.SSH_SIGNING_KEY }}
+          git-user-name: ${{ secrets.GIT_USER_NAME }}
+          git-user-email: ${{ secrets.GIT_USER_EMAIL }}
+
+      - name: Publish to npm with OIDC
+        run: |
+          VERSION="${NEW_VERSION}"
+          if [[ "$VERSION" == *"-"* ]]; then
+            TAG=$(echo "$VERSION" | sed 's/.*-\([a-zA-Z]*\).*/\1/')
+            npm publish --provenance --access public --tag "$TAG"
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: Merge release branch to main
+        run: |
+          git checkout main
+          git merge --ff-only "$RELEASE_BRANCH"
+
+      - name: Create signed tag
+        run: git tag -s "v${NEW_VERSION}" -m "v${NEW_VERSION}"
+
+      - name: Push to main with tag
+        run: git push origin main --follow-tags
+
+      - name: Delete release branch
+        run: git push origin --delete "$RELEASE_BRANCH"
+
+      - name: Create GitHub Release
+        run: gh release create "v${NEW_VERSION}" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
