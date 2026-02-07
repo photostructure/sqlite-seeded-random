@@ -37,6 +37,16 @@ function isMusl(): boolean {
   }
 }
 
+/**
+ * When running inside an Electron app packaged with ASAR, native extensions
+ * are unpacked to app.asar.unpacked/. Replace the path segment so
+ * db.loadExtension() can find the real file on disk.
+ * Outside Electron this is a no-op (paths never contain "app.asar").
+ */
+function asarUnpack(filePath: string): string {
+  return filePath.replace("app.asar", "app.asar.unpacked");
+}
+
 function getPackageRoot(): string {
   // In CJS, __dirname is available. In ESM, we derive from import.meta.url.
   // tsup injects the appropriate shim for each format.
@@ -62,13 +72,13 @@ export function getLoadablePath(): string {
   // Published package layout: dist/<platform-arch>/seeded_random.<ext>
   const platformPath = join(root, "dist", platformDir, filename);
   if (statSync(platformPath, { throwIfNoEntry: false })) {
-    return platformPath;
+    return asarUnpack(platformPath);
   }
 
   // Local dev layout from `make loadable`: dist/seeded_random.<ext>
   const devPath = join(root, "dist", filename);
   if (statSync(devPath, { throwIfNoEntry: false })) {
-    return devPath;
+    return asarUnpack(devPath);
   }
 
   throw new Error(

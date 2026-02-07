@@ -86,6 +86,28 @@ const extensionPath = getLoadablePath();
 - `SQLITE_INNOCUOUS` — usable in views and triggers without elevated trust.
 - NULL propagation: if either argument is NULL, returns NULL.
 
+## Electron
+
+The native extension is automatically resolved from `app.asar.unpacked` when running inside a packaged Electron app. You need to configure your build tool to unpack the extension binaries:
+
+**electron-builder:**
+
+```json
+{
+  "asarUnpack": ["node_modules/@photostructure/sqlite-seeded-random/**/*.{so,dylib,dll}"]
+}
+```
+
+**electron-forge:**
+
+```js
+packagerConfig: {
+  asar: {
+    unpack: "*.{so,dylib,dll}"
+  }
+}
+```
+
 ## Building from source
 
 ```sh
