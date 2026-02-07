@@ -131,8 +131,9 @@ jobs:
           path: dist/seeded_random.dll
 
   # ── Release (manual only, requires all builds + tests to pass) ────────
-  prepare-release:
-    if: github.event_name == 'workflow_dispatch'
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
     needs:
       [
         test,
@@ -145,60 +146,13 @@ jobs:
         build-win32-x64,
         build-win32-arm64,
       ]
-    runs-on: ubuntu-24.04
     permissions:
-      contents: write
-    outputs:
-      release_branch: ${{ steps.prepare.outputs.branch }}
-      new_version: ${{ steps.prepare.outputs.version }}
+      id-token: write # Required for OIDC trusted publishing to npm
+      contents: write # Required for tags/commits/releases
+      packages: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
-        with:
-          node-version: "20"
-
-      - uses: photostructure/git-ssh-signing-action@fdd4b062a9ba41473f013258cc9c7eea1640f826 # v1.2.0
-        with:
-          ssh-signing-key: ${{ secrets.SSH_SIGNING_KEY }}
-          git-user-name: ${{ secrets.GIT_USER_NAME }}
-          git-user-email: ${{ secrets.GIT_USER_EMAIL }}
-
-      - name: Bump version and create release branch
-        id: prepare
-        run: |
-          CURRENT=$(cat VERSION | tr -d '[:space:]')
-          BASE_VERSION=$(echo "$CURRENT" | sed 's/-.*//')
-          NEW_VERSION=$(npx -y semver -i "${{ github.event.inputs.version }}" "$BASE_VERSION")
-          BRANCH="release/v${NEW_VERSION}"
-
-          git checkout -b "$BRANCH"
-          echo "$NEW_VERSION" > VERSION
-          npm version "$NEW_VERSION" --no-git-tag-version
-
-          git add VERSION package.json package-lock.json
-          git commit -S -m "release: v${NEW_VERSION}"
-          git push origin "$BRANCH"
-
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-
-  publish-npm:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    needs: [prepare-release]
-    permissions:
-      contents: write
-      id-token: write
-    env:
-      NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
-      RELEASE_BRANCH: ${{ needs.prepare-release.outputs.release_branch }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.prepare-release.outputs.release_branch }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -236,14 +190,11 @@ jobs:
 
       - run: ls -laR dist/
 
+      # setup-node with registry-url is required for OIDC trusted publishing
       - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
-          node-version: "20"
+          node-version: lts/*
           registry-url: "https://registry.npmjs.org"
-
-      - run: npm ci
-
-      - run: npx tsup
 
       - uses: photostructure/git-ssh-signing-action@fdd4b062a9ba41473f013258cc9c7eea1640f826 # v1.2.0
         with:
@@ -251,31 +202,28 @@ jobs:
           git-user-name: ${{ secrets.GIT_USER_NAME }}
           git-user-email: ${{ secrets.GIT_USER_EMAIL }}
 
-      - name: Publish to npm with OIDC
+      # Upgrade npm to support OIDC trusted publishing (requires npm >= 11.5.1)
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - run: npx tsup
+
+      - name: Bump version
         run: |
-          VERSION="${NEW_VERSION}"
-          if [[ "$VERSION" == *"-"* ]]; then
-            TAG=$(echo "$VERSION" | sed 's/.*-\([a-zA-Z]*\).*/\1/')
-            npm publish --provenance --access public --tag "$TAG"
-          else
-            npm publish --provenance --access public
-          fi
+          npm version ${{ github.event.inputs.version }} -m "release: %s" --sign-git-tag
 
-      - name: Merge release branch to main
-        run: |
-          git checkout main
-          git merge --ff-only "$RELEASE_BRANCH"
+      - name: Get version
+        id: version
+        run: echo "version=v$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
-      - name: Create signed tag
-        run: git tag -s "v${NEW_VERSION}" -m "v${NEW_VERSION}"
-
-      - name: Push to main with tag
+      - name: Push changes
         run: git push origin main --follow-tags
 
-      - name: Delete release branch
-        run: git push origin --delete "$RELEASE_BRANCH"
-
       - name: Create GitHub Release
-        run: gh release create "v${NEW_VERSION}" --generate-notes
+        run: gh release create ${{ steps.version.outputs.version }} --generate-notes
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
