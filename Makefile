@@ -1,5 +1,4 @@
 CC ?= gcc
-VERSION=$(shell cat VERSION)
 
 ifeq ($(shell uname -s),Darwin)
   LOADABLE_EXTENSION=dylib
