@@ -94,7 +94,7 @@ npm run build   # builds native extension + JS/TS wrapper via tsup
 npm test        # builds JS wrapper and runs the test suite
 ```
 
-Requires a C compiler (gcc or clang) and Node.js 18+.
+Requires a C compiler (gcc or clang) and Node.js 20+.
 
 ## License
 
