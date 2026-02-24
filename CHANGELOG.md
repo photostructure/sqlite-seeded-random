@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Added Windows security hardening compiler flags (`/sdl`, `/guard:cf`,
+  `/Qspectre` on x64, `/ZH:SHA_256`) and linker flags (`/DYNAMICBASE`,
+  `/NXCOMPAT`, `/guard:cf`, `/CETCOMPAT` on x64) to CI builds
+
 ## 0.2.0
 
 - Added Electron ASAR support: `getLoadablePath()` automatically resolves
