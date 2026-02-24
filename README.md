@@ -1,5 +1,8 @@
 # sqlite-seeded-random
 
+[![npm version](https://img.shields.io/npm/v/@photostructure/sqlite-seeded-random.svg)](https://www.npmjs.com/package/@photostructure/sqlite-seeded-random)
+[![Build](https://github.com/photostructure/sqlite-seeded-random/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/photostructure/sqlite-seeded-random/actions/workflows/build.yml)
+
 Deterministic seeded hash function for SQLite, designed for stable `ORDER BY` randomization.
 
 ```sql
