@@ -29,7 +29,7 @@
     "update": "npx -y npm-check-updates -u && npm install",
     "update:actions": "pinact run -u",
     "test": "jest",
-    "precommit": "run-s clean update fmt lint build test"
+    "preflight": "run-s clean update fmt lint build test"
   },
   "repository": {
     "type": "git",

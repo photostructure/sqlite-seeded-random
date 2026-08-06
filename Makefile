@@ -30,4 +30,10 @@ clean:
 test: loadable
 	npm test
 
-.PHONY: all loadable clean test
+# Every PhotoStructure repo exposes `make preflight`: run everything that should
+# pass before cutting a release -- update dependencies, format, lint, compile,
+# and test. The steps themselves are defined in package.json.
+preflight:
+	npm run preflight
+
+.PHONY: all loadable clean test preflight
