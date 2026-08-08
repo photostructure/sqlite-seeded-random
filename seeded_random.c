@@ -25,7 +25,7 @@ static void seeded_random_func(sqlite3_context *ctx, int argc,
   }
 
   /* Golden-ratio seed combining + splitmix64 finalizer */
-  x = (uint64_t)sqlite3_value_int64(argv[0]) * UINT64_C(0x9E3779B97F4A7C15) +
+  x = ((uint64_t)sqlite3_value_int64(argv[0]) * UINT64_C(0x9E3779B97F4A7C15)) +
       (uint64_t)sqlite3_value_int64(argv[1]);
   x ^= x >> 30;
   x *= UINT64_C(0xBF58476D1CE4E5B9);
@@ -41,11 +41,8 @@ __declspec(dllexport)
 #else
 __attribute__((visibility("default")))
 #endif
-int sqlite3_seededrandom_init(
-  sqlite3 *db,
-  char **pzErrMsg,
-  const sqlite3_api_routines *pApi
-){
+int sqlite3_seededrandom_init(sqlite3 *db, char **pzErrMsg,
+                              const sqlite3_api_routines *pApi) {
   SQLITE_EXTENSION_INIT2(pApi);
   (void)pzErrMsg;
   return sqlite3_create_function(db, "seeded_random", 2,

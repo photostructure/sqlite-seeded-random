@@ -1,0 +1,46 @@
+name: Native Memory and Static Analysis
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native-analysis:
+    name: ASan, LSan, UBSan, Valgrind, and static analyzers
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Use the controlled Node.js toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Install native-analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang clang-tidy sqlite3 valgrind
+      - name: Run native memory and static analysis
+        run: make check-memory
+      - name: Verify the checked source stayed unchanged
+        run: git diff --exit-code
+      - name: Upload native-analysis logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-analysis-logs
+          path: |
+            asan-output.log
+            native-analysis.log
+            valgrind.log
+          if-no-files-found: ignore
+          retention-days: 1

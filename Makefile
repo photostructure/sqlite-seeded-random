@@ -30,10 +30,13 @@ clean:
 test: loadable
 	npm test
 
+check-memory:
+	npm run check:memory
+
 # Every PhotoStructure repo exposes `make preflight`: run everything that should
 # pass before cutting a release -- update dependencies, format, lint, compile,
-# and test. The steps themselves are defined in package.json.
+# test, and run native memory analysis. The steps are defined in package.json.
 preflight:
 	npm run preflight
 
-.PHONY: all loadable clean test preflight
+.PHONY: all loadable clean test check-memory preflight

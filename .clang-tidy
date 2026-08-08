@@ -13,7 +13,7 @@ Checks: >
   -readability-magic-numbers,
   -readability-function-cognitive-complexity
 
-WarningsAsErrors: ''
+WarningsAsErrors: '*'
 HeaderFilterRegex: '.*seeded_random\.c'
 FormatStyle: none
 
@@ -24,3 +24,5 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.ParameterCase
     value: lower_case
+  - key: readability-identifier-naming.ParameterIgnoredRegexp
+    value: '^(pzErrMsg|pApi)$'

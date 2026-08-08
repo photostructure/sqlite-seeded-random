@@ -14,6 +14,7 @@
   },
   "scripts": {
     "ci": "npm ci --ignore-scripts",
+    "check:memory": "bash scripts/check-memory.sh",
     "clean": "rm -rf dist",
     "build": "make loadable && npm run build:js",
     "build:native": "make loadable",
@@ -30,7 +31,7 @@
     "update": "npm-check-updates --upgrade --install always",
     "update:actions": "pinact run -u",
     "test": "jest",
-    "preflight": "npm i && run-s clean update fmt lint build test"
+    "preflight": "npm i && run-s clean update fmt lint build test check:memory"
   },
   "repository": {
     "type": "git",

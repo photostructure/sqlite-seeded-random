@@ -68,6 +68,10 @@ jobs:
       - name: Verify the checked source stayed unchanged
         run: git diff --exit-code
 
+  native-analysis:
+    needs: validate-source
+    uses: ./.github/workflows/native-analysis.yml
+
   build-linux-x64:
     name: Build Linux x64 (glibc)
     runs-on: ubuntu-24.04
@@ -365,7 +369,7 @@ jobs:
   release:
     name: Create signed release commit and tag
     runs-on: ubuntu-24.04
-    needs: [lint, test, test-musl]
+    needs: [lint, native-analysis, test, test-musl]
     if: ${{ github.event_name == 'workflow_dispatch' }}
     outputs:
       tag: ${{ steps.version.outputs.tag }}
