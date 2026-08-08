@@ -1,15 +1,20 @@
-name: Build
+name: Build & Prepare Release
+
+env:
+  CI: 1
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version bump type"
-        required: false
+        description: Version bump
+        required: true
+        default: patch
         type: choice
-        default: "patch"
         options:
           - patch
           - minor
@@ -18,241 +23,455 @@ on:
 permissions:
   contents: read
 
-jobs:
-  # ── Lint (runs on every push/PR) ────────────────────────────────────
-  lint:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
-        with:
-          node-version: lts/*
-      - run: npm ci
-      - run: npm run lint
+defaults:
+  run:
+    shell: bash
 
-  # ── Build native extensions (runs on every push/PR) ───────────────────
-  build-linux-x64:
+jobs:
+  validate-source:
+    name: Validate workflow source
     runs-on: ubuntu-24.04
+    permissions: {}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - run: make loadable
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Reject a manual run outside the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$EVENT_NAME" == workflow_dispatch &&
+                "$REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::Releases must be dispatched from $DEFAULT_BRANCH, not $REF"
+            exit 1
+          fi
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    needs: validate-source
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: linux-x64
+          persist-credentials: false
+      - name: Use the controlled Node.js toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Clean generated files
+        run: npm run clean
+      - name: Lint
+        run: npm run lint
+      - name: Verify the checked source stayed unchanged
+        run: git diff --exit-code
+
+  build-linux-x64:
+    name: Build Linux x64 (glibc)
+    runs-on: ubuntu-24.04
+    needs: validate-source
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the native extension
+        run: make loadable
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-x64
           path: dist/seeded_random.so
+          if-no-files-found: error
+          retention-days: 1
 
   build-linux-arm64:
+    name: Build Linux ARM64 (glibc)
     runs-on: ubuntu-24.04-arm
+    needs: validate-source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - run: make loadable
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: linux-arm64
+          persist-credentials: false
+      - name: Build the native extension
+        run: make loadable
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-arm64
           path: dist/seeded_random.so
+          if-no-files-found: error
+          retention-days: 1
 
   build-linux-x64-musl:
+    name: Build Linux x64 (musl)
     runs-on: ubuntu-24.04
+    needs: validate-source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - run: |
-          docker run --rm -v $(pwd):/tmp/project --entrypoint /bin/sh --platform linux/amd64 node:20-alpine -c "\
-          apk add build-base --update-cache && \
-          cd /tmp/project && \
-          make loadable"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: linux-x64-musl
+          persist-credentials: false
+      - name: Build the native extension in Alpine
+        env:
+          DOCKER_IMAGE: node:24.18.0-alpine3.24@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+          DOCKER_PLATFORM: linux/amd64
+        run: |
+          docker run --rm \
+            --platform "$DOCKER_PLATFORM" \
+            --volume "$GITHUB_WORKSPACE:/tmp/project" \
+            --workdir /tmp/project \
+            "$DOCKER_IMAGE" \
+            sh -c 'apk add --no-cache build-base && make loadable'
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-x64-musl
           path: dist/seeded_random.so
+          if-no-files-found: error
+          retention-days: 1
 
   build-linux-arm64-musl:
+    name: Build Linux ARM64 (musl)
     runs-on: ubuntu-24.04-arm
+    needs: validate-source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - run: |
-          docker run --rm -v $(pwd):/tmp/project --entrypoint /bin/sh --platform linux/arm64 node:20-alpine -c "\
-          apk add build-base --update-cache && \
-          cd /tmp/project && \
-          make loadable"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: linux-arm64-musl
+          persist-credentials: false
+      - name: Build the native extension in Alpine
+        env:
+          DOCKER_IMAGE: node:24.18.0-alpine3.24@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+          DOCKER_PLATFORM: linux/arm64
+        run: |
+          docker run --rm \
+            --platform "$DOCKER_PLATFORM" \
+            --volume "$GITHUB_WORKSPACE:/tmp/project" \
+            --workdir /tmp/project \
+            "$DOCKER_IMAGE" \
+            sh -c 'apk add --no-cache build-base && make loadable'
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-arm64-musl
           path: dist/seeded_random.so
+          if-no-files-found: error
+          retention-days: 1
 
   build-darwin-x64:
+    name: Build macOS x64
     runs-on: macos-15-intel
+    needs: validate-source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - run: make loadable
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: darwin-x64
+          persist-credentials: false
+      - name: Build the native extension
+        run: make loadable
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-darwin-x64
           path: dist/seeded_random.dylib
+          if-no-files-found: error
+          retention-days: 1
 
   build-darwin-arm64:
+    name: Build macOS ARM64
     runs-on: macos-14
+    needs: validate-source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - run: make loadable
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: darwin-arm64
+          persist-credentials: false
+      - name: Build the native extension
+        run: make loadable
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-darwin-arm64
           path: dist/seeded_random.dylib
+          if-no-files-found: error
+          retention-days: 1
 
   build-win32-x64:
+    name: Build Windows x64
     runs-on: windows-latest
+    needs: validate-source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-      - run: mkdir dist
-      - run: cl.exe /W4 /sdl /guard:cf /Qspectre /ZH:SHA_256 /Ivendor/ /O2 /LD seeded_random.c /Fedist/seeded_random.dll /link /DYNAMICBASE /NXCOMPAT /guard:cf /CETCOMPAT
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: win32-x64
+          persist-credentials: false
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Build the native extension
+        run: |
+          mkdir -p dist
+          cl.exe /W4 /sdl /guard:cf /Qspectre /ZH:SHA_256 /Ivendor/ /O2 /LD \
+            seeded_random.c /Fedist/seeded_random.dll /link /DYNAMICBASE \
+            /NXCOMPAT /guard:cf /CETCOMPAT
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-win32-x64
           path: dist/seeded_random.dll
+          if-no-files-found: error
+          retention-days: 1
 
   build-win32-arm64:
+    name: Build Windows ARM64
     runs-on: windows-11-arm
+    needs: validate-source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: arm64
-      - run: mkdir dist
-      - run: cl.exe /W4 /sdl /guard:cf /ZH:SHA_256 /Ivendor/ /O2 /LD seeded_random.c /Fedist/seeded_random.dll /link /DYNAMICBASE /NXCOMPAT /guard:cf
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - name: Build the native extension
+        run: |
+          mkdir -p dist
+          cl.exe /W4 /sdl /guard:cf /ZH:SHA_256 /Ivendor/ /O2 /LD \
+            seeded_random.c /Fedist/seeded_random.dll /link /DYNAMICBASE \
+            /NXCOMPAT /guard:cf
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: win32-arm64
+          name: native-win32-arm64
           path: dist/seeded_random.dll
+          if-no-files-found: error
+          retention-days: 1
 
-  # ── Test against built artifacts ─────────────────────────────────────
   test:
+    name: Test Node.js ${{ matrix.node-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     needs:
-      [
-        build-linux-x64,
-        build-linux-arm64,
-        build-darwin-x64,
-        build-darwin-arm64,
-        build-win32-x64,
-        build-win32-arm64,
-      ]
+      - build-linux-x64
+      - build-linux-arm64
+      - build-darwin-x64
+      - build-darwin-arm64
+      - build-win32-x64
+      - build-win32-arm64
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Multiple Node versions on linux-x64
-          - { os: ubuntu-24.04, artifact: linux-x64, node-version: 20 }
-          - { os: ubuntu-24.04, artifact: linux-x64, node-version: 22 }
-          - { os: ubuntu-24.04, artifact: linux-x64, node-version: 24 }
-          - { os: ubuntu-24.04, artifact: linux-x64, node-version: 25 }
-          # Other platforms on LTS node
-          - { os: ubuntu-24.04-arm, artifact: linux-arm64, node-version: 22 }
-          - { os: macos-15-intel, artifact: darwin-x64, node-version: 22 }
-          - { os: macos-14, artifact: darwin-arm64, node-version: 22 }
-          - { os: windows-latest, artifact: win32-x64, node-version: 22 }
-          - { os: windows-11-arm, artifact: win32-arm64, node-version: 22 }
-    runs-on: ${{ matrix.os }}
+          - { os: ubuntu-24.04, artifact: native-linux-x64, node-version: 22 }
+          - {
+              os: ubuntu-24.04,
+              artifact: native-linux-x64,
+              node-version: 24.18.1,
+            }
+          - { os: ubuntu-24.04, artifact: native-linux-x64, node-version: 26 }
+          - {
+              os: ubuntu-24.04-arm,
+              artifact: native-linux-arm64,
+              node-version: 24.18.1,
+            }
+          - {
+              os: macos-15-intel,
+              artifact: native-darwin-x64,
+              node-version: 24.18.1,
+            }
+          - {
+              os: macos-14,
+              artifact: native-darwin-arm64,
+              node-version: 24.18.1,
+            }
+          - {
+              os: windows-latest,
+              artifact: native-win32-x64,
+              node-version: 24.18.1,
+            }
+          - {
+              os: windows-11-arm,
+              artifact: native-win32-arm64,
+              node-version: 24.18.1,
+            }
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+          package-manager-cache: false
+      - name: Download the native extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ matrix.artifact }}
-          path: dist/
-      - run: npm ci
-      - run: npm run build:js
-      - run: npm test
+          path: dist
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Build the JavaScript and type declarations
+        run: npm run build:js
+      - name: Test the native extension
+        run: npm test
+      - name: Verify the tested source stayed unchanged
+        run: git diff --exit-code
 
-  # ── Release (manual only, requires all builds + tests to pass) ────────
-  publish:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-24.04
+  test-musl:
+    name: Test ${{ matrix.artifact }} on Node.js 24.18.1
+    runs-on: ${{ matrix.os }}
     needs:
-      [
-        lint,
-        test,
-        build-linux-x64-musl,
-        build-linux-arm64-musl,
-      ]
-    permissions:
-      id-token: write # Required for OIDC trusted publishing to npm
-      contents: write # Required for tags/commits/releases
-      packages: write
+      - build-linux-x64-musl
+      - build-linux-arm64-musl
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: native-linux-x64-musl
+            docker-platform: linux/amd64
+          - os: ubuntu-24.04-arm
+            artifact: native-linux-arm64-musl
+            docker-platform: linux/arm64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the native extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Test the native extension in Alpine
+        env:
+          DOCKER_IMAGE: node:24.18.0-alpine3.24@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+          DOCKER_PLATFORM: ${{ matrix.docker-platform }}
+        run: |
+          docker run --rm \
+            --platform "$DOCKER_PLATFORM" \
+            --volume "$GITHUB_WORKSPACE:/tmp/project" \
+            --workdir /tmp/project \
+            "$DOCKER_IMAGE" \
+            sh -c 'npm ci --ignore-scripts && npm run build:js && npm test'
+      - name: Verify the tested source stayed unchanged
+        run: git diff --exit-code
+
+  release:
+    name: Create signed release commit and tag
+    runs-on: ubuntu-24.04
+    needs: [lint, test, test-musl]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    concurrency:
+      group: ${{ github.repository }}-release
+      cancel-in-progress: false
+      queue: single
+    permissions:
+      contents: write # Push the release commit and signed tag.
+    steps:
+      - name: Checkout the tested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # This isolated job must push the release commit and tag. It installs
+          # no dependencies and has no npm publishing authority.
+          persist-credentials: true
 
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: linux-x64
-          path: dist/linux-x64
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: linux-arm64
-          path: dist/linux-arm64
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: linux-x64-musl
-          path: dist/linux-x64-musl
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: linux-arm64-musl
-          path: dist/linux-arm64-musl
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: darwin-x64
-          path: dist/darwin-x64
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: darwin-arm64
-          path: dist/darwin-arm64
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: win32-x64
-          path: dist/win32-x64
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: win32-arm64
-          path: dist/win32-arm64
+      - name: Verify the release source
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::Releases must be dispatched from $DEFAULT_BRANCH, not $GITHUB_REF"
+            exit 1
+          fi
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          if [[ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$GITHUB_SHA" ]]; then
+            echo "::error::$DEFAULT_BRANCH moved after this release run started; run it again"
+            exit 1
+          fi
 
-      - run: ls -laR dist/
-
-      # setup-node with registry-url is required for OIDC trusted publishing
-      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+      - name: Install the release Node.js toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: lts/*
-          registry-url: "https://registry.npmjs.org"
+          node-version: 24.18.1
+          package-manager-cache: false
 
-      - uses: photostructure/git-ssh-signing-action@fdd4b062a9ba41473f013258cc9c7eea1640f826 # v1.2.0
+      - name: Set up SSH signing
+        uses: photostructure/git-ssh-signing-action@abd2a642ab7d704f66193472b47c72375d85a0c1 # v2.0.1
         with:
           ssh-signing-key: ${{ secrets.SSH_SIGNING_KEY }}
           git-user-name: ${{ secrets.GIT_USER_NAME }}
           git-user-email: ${{ secrets.GIT_USER_EMAIL }}
 
-      # Upgrade npm to support OIDC trusted publishing (requires npm >= 11.5.1)
-      - run: npm install -g npm@latest
-
-      - run: npm ci
-
-      - run: npx tsup
-
-      - name: Bump version
-        run: |
-          npm version ${{ github.event.inputs.version }} -m "release: %s" --sign-git-tag
-
-      - name: Get version
+      - name: Bump the package version
         id: version
-        run: echo "version=v$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-
-      - name: Push changes
-        run: git push origin main --follow-tags
-
-      - name: Create GitHub Release
-        run: gh release create ${{ steps.version.outputs.version }} --generate-notes
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMP: ${{ inputs.version }}
+        run: |
+          case "$BUMP" in
+            patch|minor|major) ;;
+            *)
+              echo "::error::Unsupported version bump: $BUMP"
+              exit 1
+              ;;
+          esac
 
-      - name: Publish to npm
-        run: npm publish --provenance --access public
+          npm version "$BUMP" --no-git-tag-version --ignore-scripts
+
+          if ! git diff --quiet -- . \
+            ':(exclude)package.json' \
+            ':(exclude)package-lock.json'; then
+            echo "::error::The version bump changed unexpected files"
+            git diff --name-only
+            exit 1
+          fi
+
+          VERSION="$(node -p "require('./package.json').version")"
+          node -e '
+            const pkg = require("./package.json")
+            const lock = require("./package-lock.json")
+            if (lock.version !== pkg.version || lock.packages[""].version !== pkg.version) {
+              throw new Error("package.json and package-lock.json versions do not match")
+            }
+          '
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create the signed release commit and tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git add package.json package-lock.json
+          git commit -m "Release $VERSION"
+          git tag -m "Release $VERSION" "$TAG"
+
+      - name: Push the commit and tag atomically
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git push --atomic origin \
+            "HEAD:refs/heads/$DEFAULT_BRANCH" \
+            "refs/tags/$TAG"
+
+  dispatch:
+    name: Start tag-bound publishing
+    runs-on: ubuntu-24.04
+    needs: release
+    permissions:
+      actions: write # Dispatch publish.yaml at the newly created tag.
+    steps:
+      - name: Start the tag-bound publishing workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: gh workflow run publish.yaml --repo "$GITHUB_REPOSITORY" --ref "$TAG"

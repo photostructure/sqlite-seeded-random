@@ -13,6 +13,7 @@
     }
   },
   "scripts": {
+    "ci": "npm ci --ignore-scripts",
     "clean": "rm -rf dist",
     "build": "make loadable && tsup",
     "build:native": "make loadable",
@@ -26,10 +27,10 @@
     "lint": "run-s lint:*",
     "lint:tsc": "tsc --noEmit",
     "lint:eslint": "eslint",
-    "update": "npx -y npm-check-updates -u && npm install",
+    "update": "npm-check-updates --upgrade --install always",
     "update:actions": "pinact run -u",
     "test": "jest",
-    "preflight": "run-s clean update fmt lint build test"
+    "preflight": "npm run clean && npm run update && npm run fmt && npm run lint && npm run build && npm run test"
   },
   "repository": {
     "type": "git",
@@ -50,7 +51,7 @@
   },
   "homepage": "https://github.com/photostructure/sqlite-seeded-random#readme",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -61,7 +62,21 @@
     "win32"
   ],
   "files": [
-    "dist/"
+    "dist/index.d.mts",
+    "dist/index.d.ts",
+    "dist/index.js",
+    "dist/index.mjs",
+    "dist/darwin-arm64/seeded_random.dylib",
+    "dist/darwin-x64/seeded_random.dylib",
+    "dist/linux-arm64/seeded_random.so",
+    "dist/linux-arm64-musl/seeded_random.so",
+    "dist/linux-x64/seeded_random.so",
+    "dist/linux-x64-musl/seeded_random.so",
+    "dist/win32-arm64/seeded_random.dll",
+    "dist/win32-x64/seeded_random.dll",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md"
   ],
   "devDependencies": {
     "@eslint/js": "^9.39.2",

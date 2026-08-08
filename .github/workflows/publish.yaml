@@ -1,0 +1,785 @@
+name: Stage npm Release
+run-name: Stage ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: stage-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+  queue: single
+
+jobs:
+  validate-source:
+    name: Validate workflow source
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Reject a non-release ref
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [[ ! "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::This workflow must run at a vMAJOR.MINOR.PATCH tag, not $REF"
+            exit 1
+          fi
+
+  validate:
+    name: Validate signed release tag
+    runs-on: ubuntu-24.04
+    needs: validate-source
+    outputs:
+      package_name: ${{ steps.identity.outputs.package_name }}
+      package_version: ${{ steps.identity.outputs.package_version }}
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag, package identity, and signatures
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$PACKAGE_NAME" != @photostructure/sqlite-seeded-random ]]; then
+            echo "::error::Unexpected package name: $PACKAGE_NAME"
+            exit 1
+          fi
+          if [[ "$REF_NAME" != "v$PACKAGE_VERSION" ]]; then
+            echo "::error::Tag $REF_NAME does not match package version $PACKAGE_VERSION"
+            exit 1
+          fi
+
+          REF_JSON="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$REF_NAME")"
+          TAG_OBJECT_TYPE="$(jq -r '.object.type' <<< "$REF_JSON")"
+          TAG_OBJECT_SHA="$(jq -r '.object.sha' <<< "$REF_JSON")"
+          if [[ "$TAG_OBJECT_TYPE" != tag ]]; then
+            echo "::error::$REF_NAME must be an annotated tag"
+            exit 1
+          fi
+
+          TAG_JSON="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT_SHA")"
+          TAG_TARGET_TYPE="$(jq -r '.object.type' <<< "$TAG_JSON")"
+          TAG_TARGET_SHA="$(jq -r '.object.sha' <<< "$TAG_JSON")"
+          TAG_VERIFIED="$(jq -r '.verification.verified' <<< "$TAG_JSON")"
+          COMMIT_VERIFIED="$(
+            gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" \
+              --jq '.commit.verification.verified'
+          )"
+
+          if [[ "$TAG_TARGET_TYPE" != commit || "$TAG_TARGET_SHA" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag $REF_NAME does not point directly to the workflow commit"
+            exit 1
+          fi
+          if [[ "$TAG_VERIFIED" != true || "$COMMIT_VERIFIED" != true ]]; then
+            echo "::error::The release commit and annotated tag must both have verified signatures"
+            exit 1
+          fi
+
+          echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+  build-linux-x64:
+    name: Build tagged Linux x64 (glibc)
+    runs-on: ubuntu-24.04
+    needs: validate
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the native extension
+        run: make loadable
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-x64
+          path: dist/seeded_random.so
+          if-no-files-found: error
+          retention-days: 1
+
+  build-linux-arm64:
+    name: Build tagged Linux ARM64 (glibc)
+    runs-on: ubuntu-24.04-arm
+    needs: validate
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the native extension
+        run: make loadable
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-arm64
+          path: dist/seeded_random.so
+          if-no-files-found: error
+          retention-days: 1
+
+  build-linux-x64-musl:
+    name: Build tagged Linux x64 (musl)
+    runs-on: ubuntu-24.04
+    needs: validate
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the native extension in Alpine
+        env:
+          DOCKER_IMAGE: node:24.18.0-alpine3.24@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+          DOCKER_PLATFORM: linux/amd64
+        run: |
+          docker run --rm \
+            --platform "$DOCKER_PLATFORM" \
+            --volume "$GITHUB_WORKSPACE:/tmp/project" \
+            --workdir /tmp/project \
+            "$DOCKER_IMAGE" \
+            sh -c 'apk add --no-cache build-base && make loadable'
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-x64-musl
+          path: dist/seeded_random.so
+          if-no-files-found: error
+          retention-days: 1
+
+  build-linux-arm64-musl:
+    name: Build tagged Linux ARM64 (musl)
+    runs-on: ubuntu-24.04-arm
+    needs: validate
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the native extension in Alpine
+        env:
+          DOCKER_IMAGE: node:24.18.0-alpine3.24@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+          DOCKER_PLATFORM: linux/arm64
+        run: |
+          docker run --rm \
+            --platform "$DOCKER_PLATFORM" \
+            --volume "$GITHUB_WORKSPACE:/tmp/project" \
+            --workdir /tmp/project \
+            "$DOCKER_IMAGE" \
+            sh -c 'apk add --no-cache build-base && make loadable'
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-arm64-musl
+          path: dist/seeded_random.so
+          if-no-files-found: error
+          retention-days: 1
+
+  build-darwin-x64:
+    name: Build tagged macOS x64
+    runs-on: macos-15-intel
+    needs: validate
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the native extension
+        run: make loadable
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-darwin-x64
+          path: dist/seeded_random.dylib
+          if-no-files-found: error
+          retention-days: 1
+
+  build-darwin-arm64:
+    name: Build tagged macOS ARM64
+    runs-on: macos-14
+    needs: validate
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the native extension
+        run: make loadable
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-darwin-arm64
+          path: dist/seeded_random.dylib
+          if-no-files-found: error
+          retention-days: 1
+
+  build-win32-x64:
+    name: Build tagged Windows x64
+    runs-on: windows-latest
+    needs: validate
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Build the native extension
+        run: |
+          mkdir -p dist
+          cl.exe /W4 /sdl /guard:cf /Qspectre /ZH:SHA_256 /Ivendor/ /O2 /LD \
+            seeded_random.c /Fedist/seeded_random.dll /link /DYNAMICBASE \
+            /NXCOMPAT /guard:cf /CETCOMPAT
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-win32-x64
+          path: dist/seeded_random.dll
+          if-no-files-found: error
+          retention-days: 1
+
+  build-win32-arm64:
+    name: Build tagged Windows ARM64
+    runs-on: windows-11-arm
+    needs: validate
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: arm64
+      - name: Build the native extension
+        run: |
+          mkdir -p dist
+          cl.exe /W4 /sdl /guard:cf /ZH:SHA_256 /Ivendor/ /O2 /LD \
+            seeded_random.c /Fedist/seeded_random.dll /link /DYNAMICBASE \
+            /NXCOMPAT /guard:cf
+      - name: Upload the native extension
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-win32-arm64
+          path: dist/seeded_random.dll
+          if-no-files-found: error
+          retention-days: 1
+
+  pack:
+    name: Assemble exact npm tarball
+    runs-on: ubuntu-24.04
+    needs:
+      - validate
+      - build-linux-x64
+      - build-linux-arm64
+      - build-linux-x64-musl
+      - build-linux-arm64-musl
+      - build-darwin-x64
+      - build-darwin-arm64
+      - build-win32-x64
+      - build-win32-arm64
+    env:
+      EXPECTED_PACKAGE_NAME: ${{ needs.validate.outputs.package_name }}
+      EXPECTED_PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the release Node.js toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Install build dependencies
+        run: npm ci --ignore-scripts
+      - name: Download Linux x64 glibc extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-linux-x64
+          path: dist/linux-x64
+      - name: Download Linux ARM64 glibc extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-linux-arm64
+          path: dist/linux-arm64
+      - name: Download Linux x64 musl extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-linux-x64-musl
+          path: dist/linux-x64-musl
+      - name: Download Linux ARM64 musl extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-linux-arm64-musl
+          path: dist/linux-arm64-musl
+      - name: Download macOS x64 extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-darwin-x64
+          path: dist/darwin-x64
+      - name: Download macOS ARM64 extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-darwin-arm64
+          path: dist/darwin-arm64
+      - name: Download Windows x64 extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-win32-x64
+          path: dist/win32-x64
+      - name: Download Windows ARM64 extension
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-win32-arm64
+          path: dist/win32-arm64
+      - name: Build JavaScript and type declarations
+        run: npm run build:js
+      - name: Pack and verify the package
+        run: |
+          set -euo pipefail
+
+          mkdir package-artifact
+          : > "$RUNNER_TEMP/NATIVE-MANIFEST.ndjson"
+          printf '%s\n' \
+            'darwin-arm64|darwin|arm64|system|dist/darwin-arm64/seeded_random.dylib' \
+            'darwin-x64|darwin|x64|system|dist/darwin-x64/seeded_random.dylib' \
+            'linux-arm64-musl|linux|arm64|musl|dist/linux-arm64-musl/seeded_random.so' \
+            'linux-arm64|linux|arm64|glibc|dist/linux-arm64/seeded_random.so' \
+            'linux-x64-musl|linux|x64|musl|dist/linux-x64-musl/seeded_random.so' \
+            'linux-x64|linux|x64|glibc|dist/linux-x64/seeded_random.so' \
+            'win32-arm64|win32|arm64|msvc|dist/win32-arm64/seeded_random.dll' \
+            'win32-x64|win32|x64|msvc|dist/win32-x64/seeded_random.dll' \
+            | while IFS='|' read -r TARGET PLATFORM ARCHITECTURE LIBC FILE_PATH; do
+                FILE_SHA256="$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)"
+                jq -nc \
+                  --arg target "$TARGET" \
+                  --arg platform "$PLATFORM" \
+                  --arg architecture "$ARCHITECTURE" \
+                  --arg libc "$LIBC" \
+                  --arg abi sqlite3-loadable-extension \
+                  --arg path "$FILE_PATH" \
+                  --arg sha256 "$FILE_SHA256" \
+                  '{target: $target, platform: $platform,
+                    architecture: $architecture, libc: $libc, abi: $abi,
+                    path: $path, sha256: $sha256}' \
+                  >> "$RUNNER_TEMP/NATIVE-MANIFEST.ndjson"
+              done
+          jq -s \
+            '{schemaVersion: 1, artifacts: .}' \
+            "$RUNNER_TEMP/NATIVE-MANIFEST.ndjson" \
+            > package-artifact/NATIVE-MANIFEST.json
+
+          npm pack --json --ignore-scripts \
+            --pack-destination package-artifact > package-artifact/PACK.json
+
+          mapfile -t TARBALLS < <(
+            find package-artifact -maxdepth 1 -type f -name '*.tgz'
+          )
+          if [[ "${#TARBALLS[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one package tarball, found ${#TARBALLS[@]}"
+            exit 1
+          fi
+          TARBALL="${TARBALLS[0]}"
+
+          if [[ "$(jq 'length' package-artifact/PACK.json)" -ne 1 ]]; then
+            echo "::error::npm pack did not report exactly one package"
+            exit 1
+          fi
+          PACK_NAME="$(jq -r '.[0].name' package-artifact/PACK.json)"
+          PACK_VERSION="$(jq -r '.[0].version' package-artifact/PACK.json)"
+          PACK_FILENAME="$(jq -r '.[0].filename' package-artifact/PACK.json)"
+          if [[ "$PACK_NAME" != "$EXPECTED_PACKAGE_NAME" ||
+                "$PACK_VERSION" != "$EXPECTED_PACKAGE_VERSION" ||
+                "$PACK_FILENAME" != "$(basename "$TARBALL")" ]]; then
+            echo "::error::npm pack reported an unexpected package identity"
+            exit 1
+          fi
+
+          EMBEDDED_PACKAGE_JSON="$(tar -xOf "$TARBALL" package/package.json)"
+          EMBEDDED_NAME="$(jq -r '.name' <<< "$EMBEDDED_PACKAGE_JSON")"
+          EMBEDDED_VERSION="$(jq -r '.version' <<< "$EMBEDDED_PACKAGE_JSON")"
+          if [[ "$EMBEDDED_NAME" != "$EXPECTED_PACKAGE_NAME" ||
+                "$EMBEDDED_VERSION" != "$EXPECTED_PACKAGE_VERSION" ]]; then
+            echo "::error::The tarball contains an unexpected package identity"
+            exit 1
+          fi
+
+          tar -tzf "$TARBALL" | LC_ALL=C sort > package-artifact/CONTENTS.txt
+          printf '%s\n' \
+            package/CHANGELOG.md \
+            package/LICENSE \
+            package/README.md \
+            package/dist/darwin-arm64/seeded_random.dylib \
+            package/dist/darwin-x64/seeded_random.dylib \
+            package/dist/index.d.mts \
+            package/dist/index.d.ts \
+            package/dist/index.js \
+            package/dist/index.mjs \
+            package/dist/linux-arm64-musl/seeded_random.so \
+            package/dist/linux-arm64/seeded_random.so \
+            package/dist/linux-x64-musl/seeded_random.so \
+            package/dist/linux-x64/seeded_random.so \
+            package/dist/win32-arm64/seeded_random.dll \
+            package/dist/win32-x64/seeded_random.dll \
+            package/package.json \
+            | LC_ALL=C sort > "$RUNNER_TEMP/EXPECTED-CONTENTS.txt"
+          if ! diff -u "$RUNNER_TEMP/EXPECTED-CONTENTS.txt" package-artifact/CONTENTS.txt; then
+            echo "::error::The npm tarball file boundary is incorrect"
+            exit 1
+          fi
+
+          (
+            cd package-artifact
+            sha256sum -- *.tgz > SHA256SUMS
+          )
+      - name: Upload the exact package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package-${{ github.ref_name }}
+          path: |
+            package-artifact/*.tgz
+            package-artifact/PACK.json
+            package-artifact/CONTENTS.txt
+            package-artifact/NATIVE-MANIFEST.json
+            package-artifact/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
+  test-package:
+    name: Test packed package on ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-24.04 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm }
+          - { target: darwin-x64, os: macos-15-intel }
+          - { target: darwin-arm64, os: macos-14 }
+          - { target: win32-x64, os: windows-latest }
+          - { target: win32-arm64, os: windows-11-arm }
+    steps:
+      - name: Download the exact package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package-${{ github.ref_name }}
+          path: package-artifact
+      - name: Install the test Node.js toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Verify and test the installed package
+        env:
+          PACKAGE_TEST_ROOT: ${{ runner.temp }}/package-test
+        # This is the checksum-verified artifact under test, not an undeclared
+        # tool dependency. Lifecycle scripts remain disabled during install.
+        run: | # zizmor: ignore[adhoc-packages]
+          set -euo pipefail
+
+          (
+            cd package-artifact
+            sha256sum --check SHA256SUMS
+          )
+          mapfile -t TARBALLS < <(
+            find package-artifact -maxdepth 1 -type f -name '*.tgz'
+          )
+          if [[ "${#TARBALLS[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one package tarball, found ${#TARBALLS[@]}"
+            exit 1
+          fi
+          npm install \
+            --prefix "$PACKAGE_TEST_ROOT" \
+            --ignore-scripts \
+            "./${TARBALLS[0]}"
+          node -e '
+            const path = require("node:path")
+            const { DatabaseSync } = require("node:sqlite")
+            const packageRoot = path.join(
+              process.env.PACKAGE_TEST_ROOT,
+              "node_modules/@photostructure/sqlite-seeded-random",
+            )
+            const seededRandom = require(packageRoot)
+            const db = new DatabaseSync(":memory:", {
+              allowExtension: true,
+            })
+            db.enableLoadExtension(true)
+            seededRandom.load(db)
+            db.enableLoadExtension(false)
+            const statement = db.prepare(
+              "SELECT seeded_random(42, 1) AS value",
+            )
+            statement.setReadBigInts(true)
+            const row = statement.get()
+            if (typeof row.value !== "bigint") {
+              throw new Error("Packed native extension returned an invalid value")
+            }
+            db.close()
+          '
+
+  test-package-musl:
+    name: Test packed package on ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64-musl
+            docker-platform: linux/amd64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64-musl
+            docker-platform: linux/arm64
+    steps:
+      - name: Download the exact package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package-${{ github.ref_name }}
+          path: package-artifact
+      - name: Verify the exact package
+        run: |
+          (
+            cd package-artifact
+            sha256sum --check SHA256SUMS
+          )
+      - name: Install and test the package in Alpine
+        env:
+          DOCKER_IMAGE: node:24.18.0-alpine3.24@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+          DOCKER_PLATFORM: ${{ matrix.docker-platform }}
+        run: |
+          docker run --rm \
+            --platform "$DOCKER_PLATFORM" \
+            --volume "$GITHUB_WORKSPACE/package-artifact:/package-artifact:ro" \
+            "$DOCKER_IMAGE" \
+            sh -c '
+              set -eu
+              TARBALL="$(find /package-artifact -maxdepth 1 -type f -name "*.tgz")"
+              npm install --prefix /tmp/package-test --ignore-scripts "$TARBALL"
+              node -e '\''
+                const { DatabaseSync } = require("node:sqlite")
+                const seededRandom = require(
+                  "/tmp/package-test/node_modules/@photostructure/sqlite-seeded-random",
+                )
+                const db = new DatabaseSync(":memory:", {
+                  allowExtension: true,
+                })
+                db.enableLoadExtension(true)
+                seededRandom.load(db)
+                db.enableLoadExtension(false)
+                const statement = db.prepare(
+                  "SELECT seeded_random(42, 1) AS value",
+                )
+                statement.setReadBigInts(true)
+                const row = statement.get()
+                if (typeof row.value !== "bigint") {
+                  throw new Error(
+                    "Packed native extension returned an invalid value",
+                  )
+                }
+                db.close()
+              '\''
+            '
+
+  stage:
+    name: Stage package on npm
+    runs-on: ubuntu-24.04
+    needs: [validate, pack, test-package, test-package-musl]
+    permissions:
+      contents: read
+      id-token: write # Exchange GitHub OIDC identity for npm staging access.
+    env:
+      EXPECTED_PACKAGE_NAME: ${{ needs.validate.outputs.package_name }}
+      EXPECTED_PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
+    steps:
+      - name: Download the exact package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package-${{ github.ref_name }}
+          path: package-artifact
+      - name: Install the release Node.js toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+      - name: Verify the release tag still matches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::This workflow must run at a release tag"
+            exit 1
+          fi
+
+          REF_JSON="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$REF_NAME")"
+          TAG_OBJECT_TYPE="$(jq -r '.object.type' <<< "$REF_JSON")"
+          TAG_OBJECT_SHA="$(jq -r '.object.sha' <<< "$REF_JSON")"
+          if [[ "$TAG_OBJECT_TYPE" != tag ]]; then
+            echo "::error::$REF_NAME is no longer an annotated tag"
+            exit 1
+          fi
+
+          TAG_JSON="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT_SHA")"
+          TAG_TARGET_TYPE="$(jq -r '.object.type' <<< "$TAG_JSON")"
+          TAG_TARGET_SHA="$(jq -r '.object.sha' <<< "$TAG_JSON")"
+          TAG_VERIFIED="$(jq -r '.verification.verified' <<< "$TAG_JSON")"
+          COMMIT_VERIFIED="$(
+            gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" \
+              --jq '.commit.verification.verified'
+          )"
+          if [[ "$TAG_TARGET_TYPE" != commit ||
+                "$TAG_TARGET_SHA" != "$GITHUB_SHA" ||
+                "$TAG_VERIFIED" != true ||
+                "$COMMIT_VERIFIED" != true ]]; then
+            echo "::error::Tag $REF_NAME moved or lost a verified signature"
+            exit 1
+          fi
+      - name: Stage the npm package
+        run: |
+          set -euo pipefail
+
+          (
+            cd package-artifact
+            sha256sum --check SHA256SUMS
+          )
+
+          mapfile -t TARBALLS < <(
+            find package-artifact -maxdepth 1 -type f -name '*.tgz'
+          )
+          if [[ "${#TARBALLS[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one package tarball, found ${#TARBALLS[@]}"
+            exit 1
+          fi
+          TARBALL="${TARBALLS[0]}"
+
+          if [[ "$(jq 'length' package-artifact/PACK.json)" -ne 1 ]]; then
+            echo "::error::The artifact has an invalid npm pack report"
+            exit 1
+          fi
+          PACK_NAME="$(jq -r '.[0].name' package-artifact/PACK.json)"
+          PACK_VERSION="$(jq -r '.[0].version' package-artifact/PACK.json)"
+          PACK_FILENAME="$(jq -r '.[0].filename' package-artifact/PACK.json)"
+
+          EMBEDDED_PACKAGE_JSON="$(tar -xOf "$TARBALL" package/package.json)"
+          EMBEDDED_NAME="$(jq -r '.name' <<< "$EMBEDDED_PACKAGE_JSON")"
+          EMBEDDED_VERSION="$(jq -r '.version' <<< "$EMBEDDED_PACKAGE_JSON")"
+          if [[ "$PACK_NAME" != "$EXPECTED_PACKAGE_NAME" ||
+                "$PACK_VERSION" != "$EXPECTED_PACKAGE_VERSION" ||
+                "$PACK_FILENAME" != "$(basename "$TARBALL")" ||
+                "$EMBEDDED_NAME" != "$EXPECTED_PACKAGE_NAME" ||
+                "$EMBEDDED_VERSION" != "$EXPECTED_PACKAGE_VERSION" ]]; then
+            echo "::error::The downloaded artifact has an unexpected package identity"
+            exit 1
+          fi
+
+          if [[ "$(jq -r '.schemaVersion' package-artifact/NATIVE-MANIFEST.json)" != 1 ||
+                "$(jq '.artifacts | length' package-artifact/NATIVE-MANIFEST.json)" -ne 8 ]]; then
+            echo "::error::The native artifact manifest is invalid"
+            exit 1
+          fi
+          jq -r '
+            .artifacts[] |
+            [.target, .platform, .architecture, .libc, .abi, .path] |
+            join("|")
+          ' package-artifact/NATIVE-MANIFEST.json \
+            | LC_ALL=C sort > "$RUNNER_TEMP/ACTUAL-NATIVE-TARGETS.txt"
+          printf '%s\n' \
+            'darwin-arm64|darwin|arm64|system|sqlite3-loadable-extension|dist/darwin-arm64/seeded_random.dylib' \
+            'darwin-x64|darwin|x64|system|sqlite3-loadable-extension|dist/darwin-x64/seeded_random.dylib' \
+            'linux-arm64-musl|linux|arm64|musl|sqlite3-loadable-extension|dist/linux-arm64-musl/seeded_random.so' \
+            'linux-arm64|linux|arm64|glibc|sqlite3-loadable-extension|dist/linux-arm64/seeded_random.so' \
+            'linux-x64-musl|linux|x64|musl|sqlite3-loadable-extension|dist/linux-x64-musl/seeded_random.so' \
+            'linux-x64|linux|x64|glibc|sqlite3-loadable-extension|dist/linux-x64/seeded_random.so' \
+            'win32-arm64|win32|arm64|msvc|sqlite3-loadable-extension|dist/win32-arm64/seeded_random.dll' \
+            'win32-x64|win32|x64|msvc|sqlite3-loadable-extension|dist/win32-x64/seeded_random.dll' \
+            | LC_ALL=C sort > "$RUNNER_TEMP/EXPECTED-NATIVE-TARGETS.txt"
+          if ! diff -u \
+            "$RUNNER_TEMP/EXPECTED-NATIVE-TARGETS.txt" \
+            "$RUNNER_TEMP/ACTUAL-NATIVE-TARGETS.txt"; then
+            echo "::error::The native artifact manifest has unexpected targets"
+            exit 1
+          fi
+          while IFS='|' read -r FILE_PATH EXPECTED_SHA256; do
+            ACTUAL_SHA256="$(
+              tar -xOf "$TARBALL" "package/$FILE_PATH" | sha256sum | cut -d ' ' -f 1
+            )"
+            if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
+              echo "::error::Native binary checksum mismatch: $FILE_PATH"
+              exit 1
+            fi
+          done < <(
+            jq -r '.artifacts[] | [.path, .sha256] | join("|")' \
+              package-artifact/NATIVE-MANIFEST.json
+          )
+
+          tar -tzf "$TARBALL" | LC_ALL=C sort | \
+            diff -u package-artifact/CONTENTS.txt -
+
+          npm stage publish "./$TARBALL" --ignore-scripts
+
+  github-release:
+    name: Create immutable GitHub release
+    runs-on: ubuntu-24.04
+    needs: stage
+    permissions:
+      contents: write # Create the immutable GitHub release.
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::This workflow must run at a release tag"
+            exit 1
+          fi
+
+          REF_JSON="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$REF_NAME")"
+          TAG_OBJECT_TYPE="$(jq -r '.object.type' <<< "$REF_JSON")"
+          TAG_OBJECT_SHA="$(jq -r '.object.sha' <<< "$REF_JSON")"
+          if [[ "$TAG_OBJECT_TYPE" != tag ]]; then
+            echo "::error::$REF_NAME is no longer an annotated tag"
+            exit 1
+          fi
+
+          TAG_JSON="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT_SHA")"
+          TAG_TARGET_TYPE="$(jq -r '.object.type' <<< "$TAG_JSON")"
+          TAG_TARGET_SHA="$(jq -r '.object.sha' <<< "$TAG_JSON")"
+          TAG_VERIFIED="$(jq -r '.verification.verified' <<< "$TAG_JSON")"
+          COMMIT_VERIFIED="$(
+            gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" \
+              --jq '.commit.verification.verified'
+          )"
+          if [[ "$TAG_TARGET_TYPE" != commit ||
+                "$TAG_TARGET_SHA" != "$GITHUB_SHA" ||
+                "$TAG_VERIFIED" != true ||
+                "$COMMIT_VERIFIED" != true ]]; then
+            echo "::error::Tag $TAG moved or lost a verified signature"
+            exit 1
+          fi
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0
+
+- Raised the minimum supported Node.js version from 20 to 22
+- Replaced direct npm publishing with signed, tag-bound staged publishing,
+  exact package-boundary verification, and installed-package tests for all
+  eight native targets
+
 ## 0.2.1
 
 - Added Windows security hardening compiler flags (`/sdl`, `/guard:cf`,
