@@ -389,14 +389,17 @@ jobs:
           npm pack --json --ignore-scripts \
             --pack-destination package-artifact > package-artifact/PACK.json
 
-          mapfile -t TARBALLS < <(
-            find package-artifact -maxdepth 1 -type f -name '*.tgz'
-          )
-          if [[ "${#TARBALLS[@]}" -ne 1 ]]; then
-            echo "::error::Expected exactly one package tarball, found ${#TARBALLS[@]}"
+          TARBALL=""
+          TARBALL_COUNT=0
+          for CANDIDATE in package-artifact/*.tgz; do
+            [[ -f "$CANDIDATE" ]] || continue
+            TARBALL="$CANDIDATE"
+            TARBALL_COUNT=$((TARBALL_COUNT + 1))
+          done
+          if [[ "$TARBALL_COUNT" -ne 1 ]]; then
+            echo "::error::Expected exactly one package tarball, found $TARBALL_COUNT"
             exit 1
           fi
-          TARBALL="${TARBALLS[0]}"
 
           if [[ "$(jq 'length' package-artifact/PACK.json)" -ne 1 ]]; then
             echo "::error::npm pack did not report exactly one package"
@@ -487,29 +490,30 @@ jobs:
         with:
           node-version: 24.18.1
           package-manager-cache: false
-      - name: Verify and test the installed package
+      - name: Install and test the packaged extension
         env:
           PACKAGE_TEST_ROOT: ${{ runner.temp }}/package-test
-        # This is the checksum-verified artifact under test, not an undeclared
-        # tool dependency. Lifecycle scripts remain disabled during install.
+        # This is the exact artifact produced by the pack job, not an
+        # undeclared tool dependency. Lifecycle scripts remain disabled.
         run: | # zizmor: ignore[adhoc-packages]
           set -euo pipefail
 
-          (
-            cd package-artifact
-            sha256sum --check SHA256SUMS
-          )
-          mapfile -t TARBALLS < <(
-            find package-artifact -maxdepth 1 -type f -name '*.tgz'
-          )
-          if [[ "${#TARBALLS[@]}" -ne 1 ]]; then
-            echo "::error::Expected exactly one package tarball, found ${#TARBALLS[@]}"
+          TARBALL=""
+          TARBALL_COUNT=0
+          for CANDIDATE in package-artifact/*.tgz; do
+            [[ -f "$CANDIDATE" ]] || continue
+            TARBALL="$CANDIDATE"
+            TARBALL_COUNT=$((TARBALL_COUNT + 1))
+          done
+          if [[ "$TARBALL_COUNT" -ne 1 ]]; then
+            echo "::error::Expected exactly one package tarball, found $TARBALL_COUNT"
             exit 1
           fi
+
           npm install \
             --prefix "$PACKAGE_TEST_ROOT" \
             --ignore-scripts \
-            "./${TARBALLS[0]}"
+            "./$TARBALL"
           node -e '
             const path = require("node:path")
             const { DatabaseSync } = require("node:sqlite")
@@ -555,12 +559,6 @@ jobs:
         with:
           name: npm-package-${{ github.ref_name }}
           path: package-artifact
-      - name: Verify the exact package
-        run: |
-          (
-            cd package-artifact
-            sha256sum --check SHA256SUMS
-          )
       - name: Install and test the package in Alpine
         env:
           DOCKER_IMAGE: node:24.18.0-alpine3.24@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
@@ -660,19 +658,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          (
-            cd package-artifact
-            sha256sum --check SHA256SUMS
-          )
-
-          mapfile -t TARBALLS < <(
-            find package-artifact -maxdepth 1 -type f -name '*.tgz'
-          )
-          if [[ "${#TARBALLS[@]}" -ne 1 ]]; then
-            echo "::error::Expected exactly one package tarball, found ${#TARBALLS[@]}"
+          if ! ( cd package-artifact && sha256sum --check SHA256SUMS ); then
+            echo "::error::The package artifact failed checksum verification"
             exit 1
           fi
-          TARBALL="${TARBALLS[0]}"
+
+          TARBALL=""
+          TARBALL_COUNT=0
+          for CANDIDATE in package-artifact/*.tgz; do
+            [[ -f "$CANDIDATE" ]] || continue
+            TARBALL="$CANDIDATE"
+            TARBALL_COUNT=$((TARBALL_COUNT + 1))
+          done
+          if [[ "$TARBALL_COUNT" -ne 1 ]]; then
+            echo "::error::Expected exactly one package tarball, found $TARBALL_COUNT"
+            exit 1
+          fi
 
           if [[ "$(jq 'length' package-artifact/PACK.json)" -ne 1 ]]; then
             echo "::error::The artifact has an invalid npm pack report"
