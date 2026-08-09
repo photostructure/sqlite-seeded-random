@@ -216,6 +216,8 @@ jobs:
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
       - name: Build the native extension
+        env:
+          MSYS2_ARG_CONV_EXCL: "*"
         run: |
           mkdir -p dist
           cl.exe /W4 /sdl /guard:cf /Qspectre /ZH:SHA_256 /Ivendor/ /O2 /LD \
@@ -243,6 +245,8 @@ jobs:
         with:
           arch: arm64
       - name: Build the native extension
+        env:
+          MSYS2_ARG_CONV_EXCL: "*"
         run: |
           mkdir -p dist
           cl.exe /W4 /sdl /guard:cf /ZH:SHA_256 /Ivendor/ /O2 /LD \
