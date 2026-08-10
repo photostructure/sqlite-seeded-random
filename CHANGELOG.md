@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0
+## 1.0.1
 
 - Raised the minimum supported Node.js version from 20 to 22
 - Replaced direct npm publishing with signed, tag-bound staged publishing,
