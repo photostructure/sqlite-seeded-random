@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2
+
+- Hardened release packaging by rejecting missing, misplaced, or unexpected
+  native artifacts before npm staging and using GitHub Actions' verified
+  artifact transfers
+- Prevented native sanitizer checks from hanging by selecting a stable SQLite
+  executable and enforcing a configurable timeout
+
 ## 1.0.1
 
 - Raised the minimum supported Node.js version from 20 to 22
