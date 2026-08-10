@@ -351,43 +351,15 @@ jobs:
           path: dist/win32-arm64
       - name: Build JavaScript and type declarations
         run: npm run build:js
+      - name: Verify the exact native artifact set
+        run: node scripts/verify-native-artifacts.mjs dist
       - name: Pack and verify the package
         run: |
           set -euo pipefail
 
           mkdir package-artifact
-          : > "$RUNNER_TEMP/NATIVE-MANIFEST.ndjson"
-          printf '%s\n' \
-            'darwin-arm64|darwin|arm64|system|dist/darwin-arm64/seeded_random.dylib' \
-            'darwin-x64|darwin|x64|system|dist/darwin-x64/seeded_random.dylib' \
-            'linux-arm64-musl|linux|arm64|musl|dist/linux-arm64-musl/seeded_random.so' \
-            'linux-arm64|linux|arm64|glibc|dist/linux-arm64/seeded_random.so' \
-            'linux-x64-musl|linux|x64|musl|dist/linux-x64-musl/seeded_random.so' \
-            'linux-x64|linux|x64|glibc|dist/linux-x64/seeded_random.so' \
-            'win32-arm64|win32|arm64|msvc|dist/win32-arm64/seeded_random.dll' \
-            'win32-x64|win32|x64|msvc|dist/win32-x64/seeded_random.dll' \
-            | while IFS='|' read -r TARGET PLATFORM ARCHITECTURE LIBC FILE_PATH; do
-                FILE_SHA256="$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)"
-                jq -nc \
-                  --arg target "$TARGET" \
-                  --arg platform "$PLATFORM" \
-                  --arg architecture "$ARCHITECTURE" \
-                  --arg libc "$LIBC" \
-                  --arg abi sqlite3-loadable-extension \
-                  --arg path "$FILE_PATH" \
-                  --arg sha256 "$FILE_SHA256" \
-                  '{target: $target, platform: $platform,
-                    architecture: $architecture, libc: $libc, abi: $abi,
-                    path: $path, sha256: $sha256}' \
-                  >> "$RUNNER_TEMP/NATIVE-MANIFEST.ndjson"
-              done
-          jq -s \
-            '{schemaVersion: 1, artifacts: .}' \
-            "$RUNNER_TEMP/NATIVE-MANIFEST.ndjson" \
-            > package-artifact/NATIVE-MANIFEST.json
-
           npm pack --json --ignore-scripts \
-            --pack-destination package-artifact > package-artifact/PACK.json
+            --pack-destination package-artifact > "$RUNNER_TEMP/PACK.json"
 
           TARBALL=""
           TARBALL_COUNT=0
@@ -401,13 +373,13 @@ jobs:
             exit 1
           fi
 
-          if [[ "$(jq 'length' package-artifact/PACK.json)" -ne 1 ]]; then
+          if [[ "$(jq 'length' "$RUNNER_TEMP/PACK.json")" -ne 1 ]]; then
             echo "::error::npm pack did not report exactly one package"
             exit 1
           fi
-          PACK_NAME="$(jq -r '.[0].name' package-artifact/PACK.json)"
-          PACK_VERSION="$(jq -r '.[0].version' package-artifact/PACK.json)"
-          PACK_FILENAME="$(jq -r '.[0].filename' package-artifact/PACK.json)"
+          PACK_NAME="$(jq -r '.[0].name' "$RUNNER_TEMP/PACK.json")"
+          PACK_VERSION="$(jq -r '.[0].version' "$RUNNER_TEMP/PACK.json")"
+          PACK_FILENAME="$(jq -r '.[0].filename' "$RUNNER_TEMP/PACK.json")"
           if [[ "$PACK_NAME" != "$EXPECTED_PACKAGE_NAME" ||
                 "$PACK_VERSION" != "$EXPECTED_PACKAGE_VERSION" ||
                 "$PACK_FILENAME" != "$(basename "$TARBALL")" ]]; then
@@ -424,7 +396,7 @@ jobs:
             exit 1
           fi
 
-          tar -tzf "$TARBALL" | LC_ALL=C sort > package-artifact/CONTENTS.txt
+          tar -tzf "$TARBALL" | LC_ALL=C sort > "$RUNNER_TEMP/ACTUAL-CONTENTS.txt"
           printf '%s\n' \
             package/CHANGELOG.md \
             package/LICENSE \
@@ -443,25 +415,18 @@ jobs:
             package/dist/win32-x64/seeded_random.dll \
             package/package.json \
             | LC_ALL=C sort > "$RUNNER_TEMP/EXPECTED-CONTENTS.txt"
-          if ! diff -u "$RUNNER_TEMP/EXPECTED-CONTENTS.txt" package-artifact/CONTENTS.txt; then
+          if ! diff -u \
+            "$RUNNER_TEMP/EXPECTED-CONTENTS.txt" \
+            "$RUNNER_TEMP/ACTUAL-CONTENTS.txt"; then
             echo "::error::The npm tarball file boundary is incorrect"
             exit 1
           fi
 
-          (
-            cd package-artifact
-            sha256sum -- *.tgz > SHA256SUMS
-          )
       - name: Upload the exact package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-package-${{ github.ref_name }}
-          path: |
-            package-artifact/*.tgz
-            package-artifact/PACK.json
-            package-artifact/CONTENTS.txt
-            package-artifact/NATIVE-MANIFEST.json
-            package-artifact/SHA256SUMS
+          path: package-artifact/*.tgz
           if-no-files-found: error
           retention-days: 1
 
@@ -658,11 +623,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! ( cd package-artifact && sha256sum --check SHA256SUMS ); then
-            echo "::error::The package artifact failed checksum verification"
-            exit 1
-          fi
-
           TARBALL=""
           TARBALL_COUNT=0
           for CANDIDATE in package-artifact/*.tgz; do
@@ -675,68 +635,14 @@ jobs:
             exit 1
           fi
 
-          if [[ "$(jq 'length' package-artifact/PACK.json)" -ne 1 ]]; then
-            echo "::error::The artifact has an invalid npm pack report"
-            exit 1
-          fi
-          PACK_NAME="$(jq -r '.[0].name' package-artifact/PACK.json)"
-          PACK_VERSION="$(jq -r '.[0].version' package-artifact/PACK.json)"
-          PACK_FILENAME="$(jq -r '.[0].filename' package-artifact/PACK.json)"
-
           EMBEDDED_PACKAGE_JSON="$(tar -xOf "$TARBALL" package/package.json)"
           EMBEDDED_NAME="$(jq -r '.name' <<< "$EMBEDDED_PACKAGE_JSON")"
           EMBEDDED_VERSION="$(jq -r '.version' <<< "$EMBEDDED_PACKAGE_JSON")"
-          if [[ "$PACK_NAME" != "$EXPECTED_PACKAGE_NAME" ||
-                "$PACK_VERSION" != "$EXPECTED_PACKAGE_VERSION" ||
-                "$PACK_FILENAME" != "$(basename "$TARBALL")" ||
-                "$EMBEDDED_NAME" != "$EXPECTED_PACKAGE_NAME" ||
+          if [[ "$EMBEDDED_NAME" != "$EXPECTED_PACKAGE_NAME" ||
                 "$EMBEDDED_VERSION" != "$EXPECTED_PACKAGE_VERSION" ]]; then
             echo "::error::The downloaded artifact has an unexpected package identity"
             exit 1
           fi
-
-          if [[ "$(jq -r '.schemaVersion' package-artifact/NATIVE-MANIFEST.json)" != 1 ||
-                "$(jq '.artifacts | length' package-artifact/NATIVE-MANIFEST.json)" -ne 8 ]]; then
-            echo "::error::The native artifact manifest is invalid"
-            exit 1
-          fi
-          jq -r '
-            .artifacts[] |
-            [.target, .platform, .architecture, .libc, .abi, .path] |
-            join("|")
-          ' package-artifact/NATIVE-MANIFEST.json \
-            | LC_ALL=C sort > "$RUNNER_TEMP/ACTUAL-NATIVE-TARGETS.txt"
-          printf '%s\n' \
-            'darwin-arm64|darwin|arm64|system|sqlite3-loadable-extension|dist/darwin-arm64/seeded_random.dylib' \
-            'darwin-x64|darwin|x64|system|sqlite3-loadable-extension|dist/darwin-x64/seeded_random.dylib' \
-            'linux-arm64-musl|linux|arm64|musl|sqlite3-loadable-extension|dist/linux-arm64-musl/seeded_random.so' \
-            'linux-arm64|linux|arm64|glibc|sqlite3-loadable-extension|dist/linux-arm64/seeded_random.so' \
-            'linux-x64-musl|linux|x64|musl|sqlite3-loadable-extension|dist/linux-x64-musl/seeded_random.so' \
-            'linux-x64|linux|x64|glibc|sqlite3-loadable-extension|dist/linux-x64/seeded_random.so' \
-            'win32-arm64|win32|arm64|msvc|sqlite3-loadable-extension|dist/win32-arm64/seeded_random.dll' \
-            'win32-x64|win32|x64|msvc|sqlite3-loadable-extension|dist/win32-x64/seeded_random.dll' \
-            | LC_ALL=C sort > "$RUNNER_TEMP/EXPECTED-NATIVE-TARGETS.txt"
-          if ! diff -u \
-            "$RUNNER_TEMP/EXPECTED-NATIVE-TARGETS.txt" \
-            "$RUNNER_TEMP/ACTUAL-NATIVE-TARGETS.txt"; then
-            echo "::error::The native artifact manifest has unexpected targets"
-            exit 1
-          fi
-          while IFS='|' read -r FILE_PATH EXPECTED_SHA256; do
-            ACTUAL_SHA256="$(
-              tar -xOf "$TARBALL" "package/$FILE_PATH" | sha256sum | cut -d ' ' -f 1
-            )"
-            if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
-              echo "::error::Native binary checksum mismatch: $FILE_PATH"
-              exit 1
-            fi
-          done < <(
-            jq -r '.artifacts[] | [.path, .sha256] | join("|")' \
-              package-artifact/NATIVE-MANIFEST.json
-          )
-
-          tar -tzf "$TARBALL" | LC_ALL=C sort | \
-            diff -u package-artifact/CONTENTS.txt -
 
           npm stage publish "./$TARBALL" --ignore-scripts
 

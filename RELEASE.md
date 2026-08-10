@@ -31,6 +31,14 @@ tag. The second workflow validates the tag, rebuilds all eight native targets
 from the tagged source, assembles and verifies one npm tarball, stages it on
 npm, and creates the GitHub release.
 
+Inter-job artifact integrity comes from GitHub Actions: the pinned
+`actions/download-artifact` v8 action verifies each artifact against the digest
+held by GitHub and fails on a mismatch. Immediately before packaging, the pack
+job also requires exactly one native binary at each supported target path and
+rejects any unexpected file in the assembled tree. After `npm pack`, the
+tarball boundary check independently requires every supported binary exactly
+once, catching package `files` allowlist regressions.
+
 ## Approve the npm stage
 
 1. Open **Staged Packages** from the npm user menu.
