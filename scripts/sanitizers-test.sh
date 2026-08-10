@@ -27,6 +27,24 @@ if [[ "$detect_leaks" != 0 && "$detect_leaks" != 1 ]]; then
   exit 1
 fi
 
+# Pin the interpreter instead of inheriting PATH: an unrelated vendored sqlite3
+# earlier on PATH silently changes what the sanitizer runtimes get preloaded
+# into, and only some host binaries survive that.
+SQLITE3="${SQLITE3:-/usr/bin/sqlite3}"
+if [[ ! -x "$SQLITE3" ]]; then
+  SQLITE3="$(command -v sqlite3 || true)"
+fi
+if [[ -z "$SQLITE3" || ! -x "$SQLITE3" ]]; then
+  echo "No sqlite3 executable found; set SQLITE3 to one" >&2
+  exit 1
+fi
+
+test_timeout="${NATIVE_TEST_TIMEOUT:-120}"
+if [[ ! "$test_timeout" =~ ^[0-9]+$ || "$test_timeout" -eq 0 ]]; then
+  echo "NATIVE_TEST_TIMEOUT must be a positive integer number of seconds" >&2
+  exit 1
+fi
+
 clang_asan="$(clang -print-file-name="libclang_rt.asan-$sanitizer_arch.so")"
 clang_ubsan="$(clang -print-file-name="libclang_rt.ubsan_standalone-$sanitizer_arch.so")"
 gcc_asan="$(gcc -print-file-name=libasan.so)"
@@ -49,17 +67,18 @@ for candidate in "${runtime_candidates[@]}"; do
   if timeout -k 1 5 env \
       LD_PRELOAD="$candidate" \
       ASAN_OPTIONS="detect_leaks=$detect_leaks" \
-      sqlite3 :memory: 'SELECT 1;' >/dev/null 2>&1; then
+      "$SQLITE3" :memory: 'SELECT 1;' >/dev/null 2>&1; then
     sanitizer_preload="$candidate"
     break
   fi
 done
 
 if [[ -z "$sanitizer_preload" ]]; then
-  echo "No sanitizer runtime could complete a SQLite leak-check probe." >&2
+  echo "No sanitizer runtime could complete a SQLite leak-check probe with $SQLITE3." >&2
   echo "If running under a debugger, retry with NATIVE_DETECT_LEAKS=0; Valgrind still gates leaks." >&2
   exit 1
 fi
+echo "Using sqlite3: $SQLITE3"
 echo "Using sanitizer runtimes: $sanitizer_preload"
 
 sanitizer_flags="-std=c17 -O1 -g -fno-omit-frame-pointer"
@@ -75,18 +94,28 @@ make --no-print-directory -B loadable \
   CFLAGS="$sanitizer_flags" \
   LDFLAGS="-fsanitize=address,undefined"
 
+# The probe above only proves the runtimes load; the real run can still wedge
+# inside the sanitizer runtime, so bound it. Without this it spins on a core
+# indefinitely, having written nothing.
 set +e
-env \
+timeout -k 5 "$test_timeout" env \
   LD_PRELOAD="$sanitizer_preload" \
   ASAN_OPTIONS="detect_leaks=$detect_leaks:abort_on_error=1:halt_on_error=1:strict_string_checks=1" \
   LSAN_OPTIONS="exitcode=23" \
   UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
-  sqlite3 :memory: \
+  "$SQLITE3" :memory: \
     -cmd ".load $BUILD_DIR/dist/seeded_random.so" \
     < "$SCRIPT_DIR/native-memory-test.sql" \
     2>&1 | tee "$OUTPUT_FILE"
 test_status=${PIPESTATUS[0]}
 set -e
+
+if (( test_status == 124 || test_status == 137 )); then
+  echo "Sanitizer run did not finish within ${test_timeout}s and was killed." >&2
+  echo "This is the sanitizer runtime wedging, not a slow test; raise NATIVE_TEST_TIMEOUT" >&2
+  echo "only if the machine is genuinely that slow. Output retained at $OUTPUT_FILE" >&2
+  exit 1
+fi
 
 if (( test_status != 0 )) || \
    grep -Eq 'ERROR: (AddressSanitizer|LeakSanitizer)|runtime error:|SUMMARY: .*Sanitizer' "$OUTPUT_FILE"; then
