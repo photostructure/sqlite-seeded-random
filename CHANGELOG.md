@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased (patch)]
 
 - GitHub releases now wait for npm to serve the approved package, and carry
   these release notes.
