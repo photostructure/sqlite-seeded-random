@@ -9,7 +9,11 @@ workstation.
 
 ## Prepare the release
 
-1. Add the release notes to `CHANGELOG.md` on `main`.
+1. Add the release notes to `CHANGELOG.md` on `main`, under a heading that
+   names the version bump from the consumer-visible change:
+   `## [Unreleased (patch)]`, `## [Unreleased (minor)]`, or
+   `## [Unreleased (major)]`. The release workflow renames it to
+   `## [X.Y.Z] - YYYY-MM-DD`, and those notes become the GitHub release notes.
 2. Push the completed changes and wait for the ordinary `main` build to pass.
 3. Confirm that `main` has not moved to a different commit.
 
@@ -17,19 +21,35 @@ workstation.
 
 1. Open **Build & Prepare Release** in GitHub Actions.
 2. Select **Run workflow** on `main`.
-3. Choose `patch`, `minor`, or `major` from the consumer-visible change.
-4. Wait for **Build & Prepare Release** to finish.
-5. Wait for the tag-bound **Stage npm Release** workflow to finish.
+3. Wait for **Build & Prepare Release** to finish.
+4. In the tag-bound **Stage npm Release** workflow, wait for the **Stage
+   package on npm** job to finish. Leave the workflow running: its **Create
+   immutable GitHub release** job waits for your npm approval.
 
-While the package remains below 1.0.0, use `minor` for breaking consumer
-changes and `patch` for backward-compatible changes. Use `major` when promoting
-the package to 1.0.0 or for breaking changes after 1.0.0.
+## How the release works
 
-The first workflow runs the full lint, native-build, and test gate, creates a
-signed release commit and annotated tag, and starts the second workflow at that
-tag. The second workflow validates the tag, rebuilds all eight native targets
-from the tagged source, assembles and verifies one npm tarball, stages it on
-npm, and creates the GitHub release.
+- `build.yml` (**Build & Prepare Release**) reads the version bump from the
+  `## [Unreleased (patch|minor|major)]` heading in `CHANGELOG.md` while the
+  lint, native-build, and test jobs run, and fails with instructions if
+  that heading is missing, names no bump, or has no notes under it. Once both
+  pass, it bumps the version, renames the heading to `## [X.Y.Z] - YYYY-MM-DD`
+  with a new empty `## [Unreleased]` above it, adds the version's
+  `[X.Y.Z]: <url>` link definition, pushes a signed release commit and
+  annotated `vX.Y.Z` tag, and starts `publish.yaml` at that tag.
+  [`photostructure/changelog-release-action`](https://github.com/photostructure/changelog-release-action)
+  does the `CHANGELOG.md` work and the npm wait below.
+- `publish.yaml` (**Stage npm Release**) validates the tag, rebuilds all eight
+  native targets from the tagged source, assembles and verifies one npm
+  tarball, and stages it with `npm stage publish`.
+- npm validates a staged package, then holds it until a maintainer approves it
+  with 2FA.
+- The **Create immutable GitHub release** job checks npm every 5 minutes, for
+  up to 5 hours 45 minutes. Any npm error other than "not found" (E404) ends
+  the job early. Once npm serves the version, it re-verifies the signed tag and
+  creates the immutable GitHub release. Its notes are the version's
+  `CHANGELOG.md` section, followed by GitHub's generated notes. GitHub emails
+  the release to the repository's watchers at that moment, so the email always
+  announces a version they can install.
 
 Inter-job artifact integrity comes from GitHub Actions: the pinned
 `actions/download-artifact` v8 action verifies each artifact against the digest
@@ -48,7 +68,9 @@ once, catching package `files` allowlist regressions.
 4. Confirm that every supported native binary is present exactly once.
 5. Approve the staged package with 2FA.
 6. Confirm that npm lists the version publicly.
-7. Confirm that the GitHub release exists and is immutable.
+7. Wait for the **Create immutable GitHub release** job to finish, then confirm
+   that the GitHub release exists, is immutable, and has the version's
+   `CHANGELOG.md` section at the top of its notes.
 
 ## Recover from a failed release
 
@@ -58,5 +80,19 @@ once, catching package `files` allowlist regressions.
 - If the tagged workflow is defective, fix `main` and release a new version.
   Never move the existing tag.
 - If the staged contents are wrong, reject the stage and release a new version.
+  The rejected run's **Create immutable GitHub release** job then runs out of
+  checks and fails without creating a release. Cancel that run, or ignore its
+  failure, and do not re-run it.
+- In the two cases above, the release commit has already moved the notes under
+  `## [X.Y.Z] - YYYY-MM-DD` in `CHANGELOG.md`, and the next release run fails
+  until `## [Unreleased]` names a bump and has notes. Rename that empty heading
+  to `## [Unreleased (patch|minor|major)]`, move the unpublished version's notes
+  under it, leave a line under `## [X.Y.Z]` saying that version was never
+  published, and then start the new release.
+- If the **Create immutable GitHub release** job fails before it creates the
+  release (its checks ran out before you approved the stage, or `npm view`
+  failed with an error other than E404), approve the stage if you have not,
+  then use **Re-run failed jobs** on that **Stage npm Release** run. GitHub
+  allows re-runs for 30 days. Do not start a new release.
 - If npm publishes a bad release, deprecate it or publish a corrected version.
   Never overwrite a published version.
