@@ -208,8 +208,12 @@ jobs:
 
   build-darwin-arm64:
     name: Build tagged macOS ARM64
-    runs-on: macos-14
+    runs-on: macos-15
     needs: validate
+    env:
+      # Without a deployment target, the dylib requires the runner's macOS.
+      # darwin-arm64 was built on macos-14, so keep it loadable there.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - name: Checkout the release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -441,7 +445,7 @@ jobs:
           - { target: linux-x64, os: ubuntu-24.04 }
           - { target: linux-arm64, os: ubuntu-24.04-arm }
           - { target: darwin-x64, os: macos-15-intel }
-          - { target: darwin-arm64, os: macos-14 }
+          - { target: darwin-arm64, os: macos-15 }
           - { target: win32-x64, os: windows-latest }
           - { target: win32-arm64, os: windows-11-arm }
     steps:
