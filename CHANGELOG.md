@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased (patch)]
+## [Unreleased]
+
+## [1.0.3] - 2026-11-06
 
 - GitHub releases now wait for npm to serve the approved package, and carry
   these release notes.
@@ -42,6 +44,7 @@
 - Dual CJS/ESM package with TypeScript declarations
 - `load(db)` helper for better-sqlite3 and @photostructure/sqlite
 
+[1.0.3]: https://github.com/photostructure/sqlite-seeded-random/releases/tag/v1.0.3
 [1.0.2]: https://github.com/photostructure/sqlite-seeded-random/releases/tag/v1.0.2
 [1.0.1]: https://github.com/photostructure/sqlite-seeded-random/releases/tag/v1.0.1
 [0.2.1]: https://github.com/photostructure/sqlite-seeded-random/releases/tag/v0.2.1
